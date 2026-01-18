@@ -43,6 +43,6 @@
   "license": "ISC",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/твое-имя/репозиторий.git"
+    "url": "git+https://github.com/philosophocat/postgres-migrations.git"
   }
 }
