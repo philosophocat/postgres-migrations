@@ -1,4 +1,4 @@
-import type { Sql, TransactionSql } from 'postgres';
+import type { Sql } from 'postgres';
 import { MigratorOptions } from './types';
 
 export class Repository {
@@ -55,9 +55,9 @@ export class Repository {
 
     async markApplied(
         name: string,
-        trx?: TransactionSql
+        trx?: Sql
     ) {
-        const sql = (trx || this.sql) as Sql;
+        const sql = trx || this.sql;
         await sql`
             INSERT INTO ${ this.sql(this.schema) }.${ this.sql(this.tableName) } (name) VALUES (${name})
         `;
@@ -65,9 +65,9 @@ export class Repository {
 
     async unmarkApplied(
         name: string,
-        trx?: TransactionSql
+        trx?: Sql
     ) {
-        const sql = (trx || this.sql) as Sql;
+        const sql = trx || this.sql;
         await sql`
             DELETE FROM ${ this.sql(this.schema) }.${ this.sql(this.tableName) } WHERE name = ${name}
         `;

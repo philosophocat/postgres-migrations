@@ -1,5 +1,6 @@
 import { readdirSync } from 'node:fs';
 import { join, parse } from 'node:path';
+import type { Sql } from 'postgres';
 import { Repository } from './repository';
 import { Migration, MigratorOptions } from './types';
 
@@ -7,13 +8,18 @@ export class Migrator {
 
     private migrations: Migration[] = [];
 
-    private repo: Repository;
-
     constructor(
         private readonly options: MigratorOptions
-    ) {
-        this.repo = new Repository(options);
-    }
+    ) {};
+
+    private log = (
+        message: string,
+        level: 'info' | 'warn' = 'info'
+    ) => {
+        if (this.options.verbose || level === 'warn') {
+            console.log(message);
+        }
+    };
 
     public scan = async (
         dir: string
@@ -29,7 +35,7 @@ export class Migrator {
             const m = module.migration || module.default;
 
             if (!m) {
-                console.warn(`Skipping ${file}: no migration export found`);
+                this.log(`Skipping ${file}: no migration export found`, 'warn');
                 continue;
             }
 
@@ -47,69 +53,119 @@ export class Migrator {
 
     up = async () => {
         if (this.migrations.length === 0) {
-            return console.log('Empty migrations list')
+            return this.log('Empty migrations list');
         }
 
-        const locked = await this.repo.tryLock();
-        if (!locked) {
-            return console.log('Migrations are locked by another process');
-        }
-
+        const connection = await this.options.sql.reserve();
         try {
-            const applied = await this.repo.listApplied();
-
-            for (const m of this.migrations) {
-                if (!applied.has(m.name)) {
-                    console.log(`Applying: ${ m.name }`);
-
-                    await this.options.sql.begin(async (trx) => {
-                        await m.up(trx);
-                        await this.repo.markApplied(m.name, trx);
-                    });
-                }
-            }
-        } catch (e) {
-            console.error('Migration failed:', e);
-            throw e;
+            await this.upLocked(connection);
         } finally {
-            await this.repo.unlock();
+            connection.release();
         }
     };
 
-    down = async (
-        count = 1
-    )  => {
-        const locked = await this.repo.tryLock();
+    private upLocked = async (
+        connection: Sql
+    ) => {
+        const
+            repo = new Repository({ ...this.options, sql: connection }),
+            locked = await repo.tryLock();
+
         if (!locked) {
-            return console.log('Migrations locked');
+            return this.log('Migrations are locked by another process');
         }
 
         try {
-            const applied = await this.repo.listApplied();
-            const toRollback = this.migrations
-                .slice()
-                .reverse()
-                .filter(m => applied.has(m.name));
+            const applied = await repo.listApplied();
 
-            let rolledBackCount = 0;
-            for (const m of toRollback) {
-                if (rolledBackCount >= count && count !== -1) {
-                    break;
-                }
-
-                await this.options.sql.begin(async (trx) => {
-                    await m.down(trx);
-                    await this.repo.unmarkApplied(m.name, trx);
-                });
-                console.log(`Reverted: ${m.name}`);
-                rolledBackCount++;
+            for (const m of this.migrations) {
+                if (applied.has(m.name)) continue;
+                await this.applyMigration(m, repo, connection);
+                this.log(`Applied: ${m.name}`);
             }
         } finally {
-            await this.repo.unlock();
+            await repo.unlock();
         }
     }
 
-    async close() {
-        await this.options.sql.end();
-    };
+    private applyMigration = async (
+        m: Migration,
+        repo: Repository,
+        connection: Sql
+    )=>  {
+        await connection`BEGIN`;
+        try {
+            await m.up(connection);
+            await repo.markApplied(m.name, connection);
+            await connection`COMMIT`;
+        } catch (err) {
+            await connection`ROLLBACK`;
+            throw err;
+        }
+    }
+
+    down = async (
+        count = 1
+    ) => {
+        const connection = await this.options.sql.reserve();
+        try {
+            await this.downLocked(connection, count);
+        } finally {
+            connection.release();
+        }
+    }
+
+    private downLocked = async (
+        connection: Sql,
+        count: number
+    ) => {
+        const
+            repo = new Repository({ ...this.options, sql: connection }),
+            locked = await repo.tryLock();
+
+        if (!locked) {
+            return this.log('Migrations locked');
+        }
+
+        try {
+            const
+                applied = await repo.listApplied(),
+                toRollback = this.migrations
+                    .slice()
+                    .reverse()
+                    .filter(m => applied.has(m.name));
+
+            if (toRollback.length === 0) {
+                return this.log('Nothing to rollback');
+            }
+
+            let rolledBackCount = 0;
+            for (const m of toRollback) {
+                if (count > 0 && rolledBackCount >= count) break;
+
+                await this.revertMigration(m, repo, connection);
+                this.log(`Reverted: ${m.name}`);
+
+                rolledBackCount++;
+            }
+        } finally {
+            await repo.unlock();
+        }
+    }
+
+    private revertMigration = async(
+        m: Migration,
+        repo: Repository,
+        connection: Sql
+    ) => {
+        await connection`BEGIN`;
+        try {
+            await m.down(connection);
+            await repo.unmarkApplied(m.name, connection);
+            await connection`COMMIT`;
+        } catch (err) {
+            await connection`ROLLBACK`;
+            throw err;
+        }
+    }
 }
