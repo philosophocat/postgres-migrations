@@ -65,6 +65,7 @@ const migrator = new Migrator({
     // schema, default 'public'
     // tableName, default 'migrations'
     // lockId, optional advisory lock id
+    // verbose, default true
 });
 
 const run = async () => {

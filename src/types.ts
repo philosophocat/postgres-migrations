@@ -11,6 +11,7 @@ export interface MigratorOptions {
     schema?: string;
     tableName?: string;
     lockId?: number;
+    verbose?: boolean;
 }
 
 export interface MigrationRecord {
